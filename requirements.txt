@@ -1,4 +1,3 @@
+flask
 requests
-websocket
-websocket-client
-Flask
+websocket-client==1.6.1
