@@ -2,75 +2,55 @@ import os
 import sys
 import json
 import time
-import signal
 import threading
 import requests
-from websocket import WebSocket, WebSocketConnectionClosedException
+from websocket import WebSocket
 from keep_alive import keep_alive
 
-# ================= CONFIG =================
-status = "online"
+status = "online"  # online / dnd / idle
 
 GUILD_ID = "PUT_GUILD_ID_HERE"
 CHANNEL_ID = "PUT_CHANNEL_ID_HERE"
 SELF_MUTE = True
 SELF_DEAF = False
 
-RECONNECT_DELAY = 180  # 3 minutes (prevents reconnect storms)
-# ==========================================
-
-RUNNING = True
-
-def shutdown_handler(sig, frame):
-    global RUNNING
-    print("Shutting down cleanly...")
-    RUNNING = False
-
-signal.signal(signal.SIGTERM, shutdown_handler)
-signal.signal(signal.SIGINT, shutdown_handler)
-
-if os.getenv("ENABLE_JOINER") != "true":
-    print("Joiner disabled via env variable.")
-    sys.exit()
-
-token = os.getenv("TOKEN")
-if not token:
-    print("TOKEN missing.")
+usertoken = os.getenv("TOKEN")
+if not usertoken:
+    print("[ERROR] TOKEN not found in environment variables.")
     sys.exit()
 
 headers = {
-    "Authorization": token,
+    "Authorization": usertoken,
     "Content-Type": "application/json"
 }
 
-r = requests.get(
+validate = requests.get(
     "https://canary.discordapp.com/api/v9/users/@me",
     headers=headers
 )
 
-if r.status_code != 200:
-    print("Invalid token.")
+if validate.status_code != 200:
+    print("[ERROR] Invalid token.")
     sys.exit()
 
-user = r.json()
-print(f"Logged in as {user['username']}#{user['discriminator']} ({user['id']})")
+userinfo = validate.json()
+username = userinfo["username"]
+discriminator = userinfo["discriminator"]
+userid = userinfo["id"]
 
-def heartbeat(ws, interval):
-    while RUNNING:
+def heartbeat_loop(ws, interval):
+    while True:
         time.sleep(interval)
-        try:
-            ws.send(json.dumps({"op": 1, "d": None}))
-        except WebSocketConnectionClosedException:
-            break
+        ws.send(json.dumps({"op": 1, "d": None}))
 
-def join_once():
+def joiner(token, status):
     ws = WebSocket()
     ws.connect("wss://gateway.discord.gg/?v=9&encoding=json")
 
     hello = json.loads(ws.recv())
-    hb_interval = hello["d"]["heartbeat_interval"] / 1000
+    heartbeat_interval = hello["d"]["heartbeat_interval"] / 1000
 
-    identify = {
+    auth = {
         "op": 2,
         "d": {
             "token": token,
@@ -86,7 +66,7 @@ def join_once():
         }
     }
 
-    voice = {
+    vc = {
         "op": 4,
         "d": {
             "guild_id": GUILD_ID,
@@ -96,33 +76,26 @@ def join_once():
         }
     }
 
-    ws.send(json.dumps(identify))
-    ws.send(json.dumps(voice))
+    ws.send(json.dumps(auth))
+    ws.send(json.dumps(vc))
 
     threading.Thread(
-        target=heartbeat,
-        args=(ws, hb_interval),
+        target=heartbeat_loop,
+        args=(ws, heartbeat_interval),
         daemon=True
     ).start()
 
-    while RUNNING:
+    while True:
         ws.recv()
 
-    try:
-        ws.close()
-    except Exception:
-        pass
-
-def main():
-    while RUNNING:
+def run_joiner():
+    print(f"Logged in as {username}#{discriminator} ({userid})")
+    while True:
         try:
-            join_once()
+            joiner(usertoken, status)
         except Exception as e:
-            print("Disconnected:", e)
-
-        if RUNNING:
-            print(f"Waiting {RECONNECT_DELAY}s before reconnect...")
-            time.sleep(RECONNECT_DELAY)
+            print("Disconnected, reconnecting...", e)
+            time.sleep(5)
 
 keep_alive()
-main()
+run_joiner()
